@@ -131,6 +131,7 @@ namespace LazyProcessorProject
         private readonly Func<TValue[], TResult[]> _getBatchResultFunc;
         private readonly int _batchSize;
         private readonly int _maxDegreeOfParallelism;
-        private readonly BlockingCollection<TResult[]> _resultBuffer = new BlockingCollection<TResult[]>();
+        private const int _resultBufferBoundedCapacity = 3;
+        private readonly BlockingCollection<TResult[]> _resultBuffer = new BlockingCollection<TResult[]>(_resultBufferBoundedCapacity);
     }
 }
