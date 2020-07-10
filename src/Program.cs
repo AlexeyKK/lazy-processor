@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace LazyProcessorProject
 {
@@ -12,7 +10,7 @@ namespace LazyProcessorProject
         static void Main(string[] args)
         {
             var lazyProcessor = new LazyProcessor();
-            var values = Enumerable.Range(0, 10);
+            var values = Enumerable.Range(0, 100);
             var result = lazyProcessor.ProcessInBatches(
                 values,
                 (int[] v) => v.Select(x => x * x).ToArray(), 1);
