@@ -34,9 +34,9 @@ namespace LazyProcessorProject
         {
             ThrowIfNull(nameof(sourceValues), sourceValues);
             ThrowIfNull(nameof(getBatchResultFunc), getBatchResultFunc);
-            if(batchSize <= 0)
+            if (batchSize <= 0)
                 throw new ArgumentException($"{nameof(batchSize)} must be greater than zero");
-            if(maxDegreeOfParallelism <= 0)
+            if (maxDegreeOfParallelism <= 0)
                 throw new ArgumentException($"{nameof(maxDegreeOfParallelism)} must be greater than zero");
 
             _sourceValues = sourceValues;
@@ -52,34 +52,18 @@ namespace LazyProcessorProject
 
             Task.Run(() => ScheduleBatchTasks());
 
-            bool resultBufferIsNotComplete = true;
-            TResult[] resultBlock;
-            while (resultBufferIsNotComplete)
-            {
-                try
-                {
-                    resultBlock = _resultBuffer.Take();
-                }
-                catch (InvalidOperationException)
-                {
-                    resultBufferIsNotComplete = false;
-                    yield break;
-                }
-
-                if (resultBlock != null)
-                {
-                    foreach (var item in resultBlock)
-                        yield return item;
-                }
-            }
+            foreach (var item in _resultBuffer.GetConsumingEnumerable())
+                yield return item;
         }
 
         private void ScheduleBatchTasks()
         {
             Parallel.ForEach(
-                SplitInputToBlocks(), 
-                new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism }, 
+                SplitInputToBlocks(),
+                new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism },
                 RunBatchTask);
+
+            _resultBuffer.CompleteAdding();
         }
 
         private IEnumerable<TValue[]> SplitInputToBlocks()
@@ -91,7 +75,6 @@ namespace LazyProcessorProject
 
                 if (taskInput.Count == _batchSize)
                 {
-                    _numberOfInputBlocksCreated++;
                     yield return taskInput.ToArray();
                     taskInput.Clear();
                 }
@@ -99,23 +82,19 @@ namespace LazyProcessorProject
 
             if (taskInput.Count > 0)
             {
-                _numberOfInputBlocksCreated++;
                 yield return taskInput.ToArray();
             }
-
-            _allInputProcessed = true;
         }
 
         private void RunBatchTask(TValue[] inputBlock)
         {
             var resultBlock = _getBatchResultFunc(inputBlock);
 
-            _resultBuffer.Add(resultBlock);
-
-            Interlocked.Increment(ref _numberOfResultBlocksCreated);
-            if (Interlocked.Equals(_numberOfInputBlocksCreated, _numberOfResultBlocksCreated)
-                && _allInputProcessed)
-                _resultBuffer.CompleteAdding();
+            if (resultBlock != null)
+            {
+                foreach (var item in resultBlock)
+                    _resultBuffer.Add(item);
+            }
         }
 
         private void ThrowIfNull(string parameterName, object parameter)
@@ -124,14 +103,12 @@ namespace LazyProcessorProject
                 throw new ArgumentNullException($"{parameterName} can not be null");
         }
 
-        private int _numberOfInputBlocksCreated = 0;
-        private int _numberOfResultBlocksCreated = 0;
         private bool _allInputProcessed = false;
         private readonly IEnumerable<TValue> _sourceValues;
         private readonly Func<TValue[], TResult[]> _getBatchResultFunc;
         private readonly int _batchSize;
         private readonly int _maxDegreeOfParallelism;
         private const int _resultBufferBoundedCapacity = 3;
-        private readonly BlockingCollection<TResult[]> _resultBuffer = new BlockingCollection<TResult[]>(_resultBufferBoundedCapacity);
+        private readonly BlockingCollection<TResult> _resultBuffer = new BlockingCollection<TResult>(_resultBufferBoundedCapacity);
     }
 }
