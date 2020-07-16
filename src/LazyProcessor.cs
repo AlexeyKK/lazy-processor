@@ -43,6 +43,7 @@ namespace LazyProcessorProject
             _getBatchResultFunc = getBatchResultFunc;
             _batchSize = batchSize;
             _maxDegreeOfParallelism = maxDegreeOfParallelism;
+            _sourceValuesEnumerator = sourceValues.GetEnumerator();
         }
 
         public IEnumerable<TResult> Run()
@@ -50,44 +51,56 @@ namespace LazyProcessorProject
             if (!_sourceValues.Any())
                 yield break;
 
-            Task.Run(() => ScheduleBatchTasks());
+            var schedulingTask = ScheduleBatchTasks();
 
             foreach (var item in _resultBuffer.GetConsumingEnumerable())
                 yield return item;
+
+            schedulingTask.Wait();
         }
 
-        private void ScheduleBatchTasks()
+        private Task ScheduleBatchTasks()
         {
-            Parallel.ForEach(
-                SplitInputToBlocks(),
-                new ParallelOptions { MaxDegreeOfParallelism = _maxDegreeOfParallelism },
-                RunBatchTask);
-
-            _resultBuffer.CompleteAdding();
-        }
-
-        private IEnumerable<TValue[]> SplitInputToBlocks()
-        {
-            var taskInput = new List<TValue>();
-            foreach (var v in _sourceValues)
+            var tasks = new Task[_maxDegreeOfParallelism];
+            for (int i = 0; i < _maxDegreeOfParallelism; i++)
             {
-                taskInput.Add(v);
-
-                if (taskInput.Count == _batchSize)
-                {
-                    yield return taskInput.ToArray();
-                    taskInput.Clear();
-                }
+                tasks[i] = Task.Run(() => {
+                    TValue[] batch;
+                    while(ReadNextBatch(out batch))
+                    {
+                        RunBatchTask(batch);
+                    }
+                });
             }
+            return Task.WhenAll(tasks)
+                .ContinueWith(_ => _resultBuffer.CompleteAdding());
+        }
 
-            if (taskInput.Count > 0)
+        private bool ReadNextBatch(out TValue[] batch)
+        {
+            lock(_nextBatchLockObj)
             {
-                yield return taskInput.ToArray();
+                var count = 0;
+                var batchRead = false;
+
+                while(count < _batchSize && _sourceValuesEnumerator.MoveNext())
+                {
+                    _batchInputBlock.Add(_sourceValuesEnumerator.Current);
+                    count++;
+                    batchRead = true;
+                }
+                
+                batch = _batchInputBlock.ToArray();
+                _batchInputBlock.Clear();
+                return batchRead;
             }
         }
 
         private void RunBatchTask(TValue[] inputBlock)
         {
+            if(inputBlock?.Length == 0) return;
+
+            Console.WriteLine($"Start work on thread {Thread.CurrentThread.ManagedThreadId}");
             var resultBlock = _getBatchResultFunc(inputBlock);
 
             if (resultBlock != null)
@@ -103,12 +116,13 @@ namespace LazyProcessorProject
                 throw new ArgumentNullException($"{parameterName} can not be null");
         }
 
-        private bool _allInputProcessed = false;
         private readonly IEnumerable<TValue> _sourceValues;
+        private readonly IEnumerator<TValue> _sourceValuesEnumerator;
         private readonly Func<TValue[], TResult[]> _getBatchResultFunc;
         private readonly int _batchSize;
         private readonly int _maxDegreeOfParallelism;
-        private const int _resultBufferBoundedCapacity = 3;
-        private readonly BlockingCollection<TResult> _resultBuffer = new BlockingCollection<TResult>(_resultBufferBoundedCapacity);
+        private readonly List<TValue> _batchInputBlock = new List<TValue>();
+        private readonly object _nextBatchLockObj = new object();
+        private readonly BlockingCollection<TResult> _resultBuffer = new BlockingCollection<TResult>();
     }
 }
